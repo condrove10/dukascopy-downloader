@@ -9,10 +9,10 @@
 *.so
 *.dylib
 
-Idea IDE
+# Idea IDE
 .idea
 
-CMD dir
+# CMD dir
 cmd
 
 # Test binary, built with `go test -c`
