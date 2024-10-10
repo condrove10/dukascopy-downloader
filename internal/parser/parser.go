@@ -17,6 +17,12 @@ func Decode(data []byte, symbol string, date time.Time) ([]*tick.Tick, error) {
 	dec := lzma.NewReader(bytes.NewBuffer(data[:]))
 	defer dec.Close()
 
+	//data, err := io.ReadAll(dec)
+	//if err != nil {
+	//	return nil, fmt.Errorf("failed to read data: %w", err)
+	//}
+	//
+
 	ticksArr := make([]*tick.Tick, 0)
 	bytesArr := make([]byte, TickBytes)
 
@@ -60,21 +66,17 @@ func decodeTickData(data []byte, symbol string, timeH time.Time) (*tick.Tick, er
 	}
 
 	var point float64 = 1000
-	//for _, sym := range normSymbols {
-	//	if symbol == sym {
-	//		point = 1000
-	//		break
-	//	}
-	//}
 
 	t := tick.Tick{
 		Symbol:    symbol,
-		Timestamp: timeH.Unix()*1000 + int64(raw.TimeMs),
+		Timestamp: timeH.UnixNano() + int64(raw.TimeMs)*int64(time.Millisecond),
 		Ask:       float64(raw.Ask) / point,
 		Bid:       float64(raw.Bid) / point,
 		VolumeAsk: float64(raw.VolumeAsk),
 		VolumeBid: float64(raw.VolumeBid),
 	}
+
+	t.Date = time.Unix(0, t.Timestamp).UTC().String()
 
 	return &t, nil
 }

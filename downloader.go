@@ -7,10 +7,13 @@ import (
 	"github.com/condrove10/dukascopy-downloader/internal/parser"
 	"github.com/condrove10/dukascopy-downloader/internal/tick"
 	"github.com/condrove10/dukascopy-downloader/internal/timeformat"
+	"github.com/condrove10/dukascopy-downloader/pkg/conversions"
+	"github.com/condrove10/dukascopy-downloader/pkg/csvencoder"
 	"github.com/condrove10/dukascopy-downloader/pkg/retryablehttp"
 	"github.com/go-playground/validator/v10"
 	"io"
 	"net/http"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -57,14 +60,40 @@ func (d *Downloader) WithHttpClient(httpClient *http.Client) *Downloader {
 }
 
 func (d *Downloader) Download() ([]*tick.Tick, error) {
+	ticks := []*tick.Tick{}
+
+	s, err := d.Stream(1)
+
+	for {
+		select {
+		case t := <-s:
+			ticks = append(ticks, t)
+		case _, open := <-err:
+			if !open {
+				sort.Slice(ticks, func(i, j int) bool {
+					return ticks[i].Timestamp < ticks[j].Timestamp
+				})
+				return ticks, nil
+			}
+		case err := <-err:
+			if err != nil {
+				return nil, fmt.Errorf("error downloading %s: %w", d.Symbol, err)
+			}
+		}
+	}
+
+}
+
+func (d *Downloader) Stream(bufferSize uint32) (<-chan *tick.Tick, <-chan error) {
+	streamChan := make(chan *tick.Tick, bufferSize)
+	errorChan := make(chan error, 1)
 	if err := validator.New().Struct(d); err != nil {
-		return nil, fmt.Errorf("failed to validate downloader instance: %w", err)
+		errorChan <- fmt.Errorf("failed to validate downloader instance: %w", err)
+		return streamChan, errorChan
 	}
 
 	dates := timeformat.GetDateTimeRange(d.StartTime, d.EndTime, 1)
-	errorChan := make(chan error, 1)
 	concurrencyChan := make(chan struct{}, d.Concurrency)
-	ticks := []*tick.Tick{}
 	var wg sync.WaitGroup
 
 	runConcurrentTask(func() error {
@@ -74,17 +103,14 @@ func (d *Downloader) Download() ([]*tick.Tick, error) {
 			runControlledTask(func() error {
 				defer wg.Done()
 
-				data, err := d.fetch(date)
+				batch, err := d.fetchTicksForDate(date)
 				if err != nil {
-					return fmt.Errorf("failed to fetch data: %w", err)
+					return fmt.Errorf("failed to fetch ticks for date %s: %w", date, err)
 				}
 
-				parsedTicks, err := parser.Decode(data, d.Symbol, date)
-				if err != nil {
-					return fmt.Errorf("failed to parse data: %w", err)
+				for _, t := range batch {
+					streamChan <- t
 				}
-
-				ticks = append(ticks, parsedTicks...)
 
 				return nil
 			}, concurrencyChan, errorChan)
@@ -95,20 +121,49 @@ func (d *Downloader) Download() ([]*tick.Tick, error) {
 		return nil
 	}, errorChan)
 
-	if err := <-errorChan; err != nil {
-		return nil, fmt.Errorf("error downloading ticks: %s", err.Error())
+	return streamChan, errorChan
+}
+
+func (d *Downloader) ToCsv(filePath string) error {
+	ce := csvencoder.NewCSVEncoder()
+	ce.SetSeparator(';')
+
+	ticksSlice, err := d.Download()
+	if err != nil {
+		return fmt.Errorf("failed to download ticks: %w", err)
 	}
 
-	sort.Slice(ticks, func(i, j int) bool {
-		return ticks[i].Timestamp < ticks[j].Timestamp
-	})
+	ticksMapSpice := []map[string]interface{}{}
+	for _, t := range ticksSlice {
+		ticksMap, err := conversions.StructToMap(t, "csv")
+		if err != nil {
+			return fmt.Errorf("failed to convert ticks: %w", err)
+		}
 
-	return ticks, nil
+		ticksMapSpice = append(ticksMapSpice, ticksMap)
+	}
+
+	f, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to open file %s: %w", filePath, err)
+	}
+
+	defer f.Close()
+
+	if err := ce.Encode(f, ticksMapSpice); err != nil {
+		return fmt.Errorf("failed to encode csv: %w", err)
+	}
+
+	return nil
 }
 
 func runConcurrentTask(task func() error, errorChan chan error) {
 	go func() {
-		errorChan <- task()
+		if err := task(); err != nil {
+			errorChan <- err
+		}
+
+		close(errorChan)
 	}()
 }
 
@@ -136,7 +191,7 @@ func (d *Downloader) fetch(date time.Time) ([]byte, error) {
 
 	url := fmt.Sprintf(urlTemplate, d.Symbol, date.Year(), date.Month()-1, date.Day(), date.Hour())
 
-	client := retryablehttp.DefaultClient.WithContext(context.Background()).WithUrl(url).WithHttpClient(d.HttpClient).WithMethod(http.MethodGet).
+	client := retryablehttp.DefaultClient.WithContext(context.Background()).WithUrl(url).WithHttpClient(d.HttpClient).WithMethod(retryablehttp.MethodGet).
 		WithMaxRetries(5).WithRetryDelay(time.Second * 15).WithHeader(headers).WithRetryCondition(func(resp *http.Response, err error) bool {
 		if err != nil || resp.StatusCode != http.StatusOK {
 			return true
@@ -167,4 +222,40 @@ func (d *Downloader) fetch(date time.Time) ([]byte, error) {
 	}
 
 	return content, nil
+}
+
+func (d *Downloader) fetchTicksForDate(date time.Time) ([]*tick.Tick, error) {
+	data, err := d.fetch(date.UTC())
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch data: %w", err)
+	}
+
+	parsedTicks, err := parser.Decode(data, d.Symbol, date)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse data: %w", err)
+	}
+
+	if time.Date(d.StartTime.Year(), d.StartTime.Month(), d.StartTime.Day(), d.StartTime.Hour(), 0, 0, 0, d.StartTime.Location()).Equal(date) {
+		tmp := make([]*tick.Tick, 0)
+		for _, t := range parsedTicks {
+			if time.Unix(0, t.Timestamp).After(d.StartTime) || time.Unix(0, t.Timestamp).Equal(d.StartTime) {
+				tmp = append(tmp, t)
+			}
+		}
+
+		return tmp, nil
+	}
+
+	if time.Date(d.EndTime.Year(), d.EndTime.Month(), d.EndTime.Day(), d.EndTime.Hour(), 0, 0, 0, d.EndTime.Location()).Equal(date) {
+		tmp := make([]*tick.Tick, 0)
+		for _, t := range parsedTicks {
+			if time.Unix(0, t.Timestamp).Before(d.EndTime) || time.Unix(0, t.Timestamp).Equal(d.EndTime) {
+				tmp = append(tmp, t)
+			}
+		}
+
+		return tmp, nil
+	}
+
+	return parsedTicks, nil
 }
