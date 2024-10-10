@@ -1,4 +1,4 @@
-package dukascopy_downloader
+package downloader
 
 import (
 	"compress/gzip"

@@ -76,7 +76,5 @@ func decodeTickData(data []byte, symbol string, timeH time.Time) (*tick.Tick, er
 		VolumeBid: float64(raw.VolumeBid),
 	}
 
-	t.Date = time.Unix(0, t.Timestamp).UTC().String()
-
 	return &t, nil
 }
