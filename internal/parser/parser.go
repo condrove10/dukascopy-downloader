@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/condrove10/dukascopy-downloader/internal/tick"
+	"github.com/condrove10/dukascopy-downloader/pkg/tick"
 	"github.com/kjk/lzma"
 	"io"
 	"time"
