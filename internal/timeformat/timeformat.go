@@ -13,7 +13,7 @@ func GetDateTimeRange(start, end time.Time, hourInterval int) []time.Time {
 	}
 
 	var times []time.Time
-	for t := time.Date(start.Year(), start.Month(), start.Day(), start.Hour(), 0, 0, 0, start.Location()); t.Before(end) || t.Equal(end); t =
+	for t := time.Date(start.Year(), start.Month(), start.Day(), start.Hour(), 0, 0, 0, start.Location()); t.Before(end); t =
 		t.Add(time.Duration(hourInterval) * time.Hour) {
 		times = append(times, t)
 	}

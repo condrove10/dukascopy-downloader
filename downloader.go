@@ -25,7 +25,7 @@ type Downloader struct {
 	Symbol      string       `validate:"required,min=3"`
 	StartTime   time.Time    `validate:"required"`
 	EndTime     time.Time    `validate:"required"`
-	Concurrency uint16       `validate:"required,gt=0"`
+	Concurrency int          `validate:"required,gt=0"`
 	HttpClient  *http.Client `validate:"required"`
 }
 
@@ -49,7 +49,7 @@ func (d *Downloader) WithEndTime(endTime time.Time) *Downloader {
 	return d
 }
 
-func (d *Downloader) WithConcurrency(concurrency uint16) *Downloader {
+func (d *Downloader) WithConcurrency(concurrency int) *Downloader {
 	d.Concurrency = concurrency
 	return d
 }
@@ -66,25 +66,27 @@ func (d *Downloader) Download() ([]*tick.Tick, error) {
 
 	for {
 		select {
-		case t := <-s:
-			ticks = append(ticks, t)
-		case _, open := <-err:
+		case t, open := <-s:
 			if !open {
 				sort.Slice(ticks, func(i, j int) bool {
 					return ticks[i].Timestamp < ticks[j].Timestamp
 				})
 				return ticks, nil
 			}
-		case err := <-err:
-			if err != nil {
-				return nil, fmt.Errorf("error downloading %s: %w", d.Symbol, err)
+
+			ticks = append(ticks, t)
+		case err, open := <-err:
+			if !open {
+				return ticks, nil
 			}
+
+			return nil, fmt.Errorf("error downloading %s: %v", d.Symbol, err)
 		}
 	}
 
 }
 
-func (d *Downloader) Stream(bufferSize uint32) (<-chan *tick.Tick, <-chan error) {
+func (d *Downloader) Stream(bufferSize int) (<-chan *tick.Tick, <-chan error) {
 	streamChan := make(chan *tick.Tick, bufferSize)
 	errorChan := make(chan error, 1)
 	if err := validator.New().Struct(d); err != nil {
@@ -92,9 +94,16 @@ func (d *Downloader) Stream(bufferSize uint32) (<-chan *tick.Tick, <-chan error)
 		return streamChan, errorChan
 	}
 
+	if d.EndTime.Before(d.StartTime) {
+		errorChan <- fmt.Errorf("end time must be after start time")
+		return streamChan, errorChan
+	}
+
 	dates := timeformat.GetDateTimeRange(d.StartTime, d.EndTime, 1)
 	concurrencyChan := make(chan struct{}, d.Concurrency)
 	var wg sync.WaitGroup
+
+	expected := 0
 
 	runConcurrentTask(func() error {
 		for _, date := range dates {
@@ -108,6 +117,7 @@ func (d *Downloader) Stream(bufferSize uint32) (<-chan *tick.Tick, <-chan error)
 					return fmt.Errorf("failed to fetch ticks for date %s: %w", date, err)
 				}
 
+				expected += len(batch)
 				for _, t := range batch {
 					streamChan <- t
 				}
@@ -117,6 +127,8 @@ func (d *Downloader) Stream(bufferSize uint32) (<-chan *tick.Tick, <-chan error)
 		}
 
 		wg.Wait()
+
+		close(streamChan)
 
 		return nil
 	}, errorChan)
