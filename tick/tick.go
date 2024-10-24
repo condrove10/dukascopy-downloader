@@ -1,4 +1,4 @@
-package tick // import github.com/condrove10/dukascopy-donwloader/pkg/tick
+package tick
 
 type Tick struct {
 	Symbol    string  `validate:"required" json:"symbol" csv:"symbol"`

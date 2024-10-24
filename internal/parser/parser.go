@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"github.com/condrove10/dukascopy-downloader/pkg/tick"
+	"github.com/condrove10/dukascopy-downloader/tick"
 	"github.com/kjk/lzma"
 	"io"
 	"time"
@@ -16,12 +16,6 @@ const TickBytes = 20
 func Decode(data []byte, symbol string, date time.Time) ([]*tick.Tick, error) {
 	dec := lzma.NewReader(bytes.NewBuffer(data[:]))
 	defer dec.Close()
-
-	//data, err := io.ReadAll(dec)
-	//if err != nil {
-	//	return nil, fmt.Errorf("failed to read data: %w", err)
-	//}
-	//
 
 	ticksArr := make([]*tick.Tick, 0)
 	bytesArr := make([]byte, TickBytes)
