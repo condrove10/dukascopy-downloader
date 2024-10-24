@@ -3,7 +3,7 @@ package cursor
 import (
 	"context"
 	"errors"
-	"github.com/condrove10/dukascopy-downloader/pkg/tick"
+	"github.com/condrove10/dukascopy-downloader/tick"
 )
 
 var (
